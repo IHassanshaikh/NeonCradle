@@ -74,8 +74,6 @@ class Sparkle {
     const flicker = 0.5 + 0.5 * Math.sin(this.twinkle);
     ctx.save();
     ctx.globalAlpha = this.life * flicker;
-    ctx.shadowColor = this.color;
-    ctx.shadowBlur = 10;
     ctx.fillStyle = this.color;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius * this.life, 0, Math.PI * 2);
@@ -119,8 +117,6 @@ class Particle {
     if (this.life <= 0) return;
     ctx.save();
     ctx.globalAlpha = this.life;
-    ctx.shadowColor = this.color;
-    ctx.shadowBlur = 18;
     ctx.fillStyle = this.color;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius * this.life, 0, Math.PI * 2);
@@ -156,8 +152,6 @@ class AmbientMote {
     ctx.save();
     ctx.globalAlpha = this.alpha * flicker;
     ctx.fillStyle = this.color;
-    ctx.shadowColor = this.color;
-    ctx.shadowBlur = 6;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fill();
@@ -198,8 +192,6 @@ function drawHandMesh(ctx, lm, color, W, H) {
 function drawSkeleton(ctx, lm, color, W, H) {
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 8;
   ctx.lineWidth = 2.5;
   ctx.globalAlpha = 0.6;
   for (const [a, b] of BONES) {
@@ -213,18 +205,19 @@ function drawSkeleton(ctx, lm, color, W, H) {
 
 function drawJoint(ctx, x, y, color, r) {
   ctx.save();
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 24;
+  
+  // Fake glow (much faster than shadowBlur)
+  ctx.globalAlpha = 0.3;
   ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
+  ctx.beginPath(); ctx.arc(x, y, r * 2.5, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalAlpha = 1.0;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = '#fff';
-  ctx.beginPath();
-  ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r * 0.4, 0, Math.PI * 2); ctx.fill();
+  
   ctx.restore();
 }
 
@@ -260,20 +253,19 @@ function drawBeam(ctx, x1, y1, x2, y2, dist, hue) {
   const w = 4 - t * 3;
 
   ctx.save();
-  // Wide glow
-  ctx.strokeStyle = color; ctx.shadowColor = color;
-  ctx.shadowBlur = 35 + (1 - t) * 20;
-  ctx.lineWidth = w + 6; ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = color;
+  // Wide glow (layered lines instead of shadowBlur)
+  ctx.lineWidth = w + 12; ctx.globalAlpha = 0.08;
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   // Main
-  ctx.globalAlpha = 0.7; ctx.lineWidth = w + 2; ctx.shadowBlur = 16;
+  ctx.globalAlpha = 0.4; ctx.lineWidth = w + 4;
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   // Core
-  ctx.globalAlpha = 0.85; ctx.lineWidth = w; ctx.shadowBlur = 8;
+  ctx.globalAlpha = 0.85; ctx.lineWidth = w;
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   // White hot
-  ctx.globalAlpha = 0.4; ctx.strokeStyle = '#fff'; ctx.shadowColor = '#fff';
-  ctx.shadowBlur = 4; ctx.lineWidth = Math.max(w * 0.3, 0.5);
+  ctx.globalAlpha = 0.7; ctx.strokeStyle = '#fff';
+  ctx.lineWidth = Math.max(w * 0.3, 0.5);
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   ctx.restore();
 }
