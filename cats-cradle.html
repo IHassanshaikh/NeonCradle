@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cat's Cradle — Hand Tracking</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a1a;
+      overflow: hidden;
+      font-family: 'Segoe UI', sans-serif;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #canvas-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Loading overlay */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.6s ease;
+    }
+
+    #loading.hidden { opacity: 0; pointer-events: none; }
+
+    .loader-ring {
+      width: 70px; height: 70px;
+      border: 4px solid transparent;
+      border-top: 4px solid #00ffff;
+      border-right: 4px solid #ff00ff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 24px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #loading p {
+      color: #aac;
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    /* Instruction overlay */
+    #instructions {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(170, 200, 220, 0.7);
+      font-size: 13px;
+      letter-spacing: 1px;
+      text-align: center;
+      pointer-events: none;
+      z-index: 10;
+      transition: opacity 3s ease;
+    }
+    #instructions.fade { opacity: 0; }
+  </style>
+</head>
+<body>
+
+  <div id="loading">
+    <div class="loader-ring"></div>
+    <p>Initializing Hand Tracking…</p>
+  </div>
+
+  <div id="instructions">Bring both hands into the frame to see the magic ✨</div>
+
+  <div id="canvas-container">
+    <canvas id="output"></canvas>
+  </div>
+
+  <!-- Hidden video element for camera -->
+  <video id="webcam" style="display:none;" playsinline></video>
+
+  <!-- MediaPipe dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+
+  <script>
+  (() => {
+    // ─── CONSTANTS ────────────────────────────────────────────────
+    const FINGERTIP_IDS  = [4, 8, 12, 16, 20];
+    const ALL_LANDMARKS  = Array.from({ length: 21 }, (_, i) => i);
+    const TOUCH_DIST     = 0.04;          // normalised distance to trigger particle burst
+    const MAX_PARTICLES  = 600;
+    const BG_COLOR       = '#0b0b2a';     // deep midnight blue
+
+    // Neon palette
+    const CYAN    = '#00ffff';
+    const MAGENTA = '#ff00ff';
+    const YELLOW  = '#ffff00';
+    const COLORS  = [CYAN, MAGENTA, YELLOW, '#00ff88', '#ff6600'];
+
+    // ─── STATE ────────────────────────────────────────────────────
+    let leftHand  = null;
+    let rightHand = null;
+    let particles = [];
+    let frameCount = 0;
+    let handsDetected = false;
+
+    // ─── CANVAS SETUP ─────────────────────────────────────────────
+    const canvas = document.getElementById('output');
+    const ctx    = canvas.getContext('2d');
+    const video  = document.getElementById('webcam');
+
+    function resize() {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // ─── PARTICLE CLASS ───────────────────────────────────────────
+    class Particle {
+      constructor(x, y, color) {
+        this.x  = x;
+        this.y  = y;
+        this.vx = (Math.random() - 0.5) * 8;
+        this.vy = (Math.random() - 0.5) * 8;
+        this.life     = 1;
+        this.decay    = 0.015 + Math.random() * 0.025;
+        this.radius   = 1.5 + Math.random() * 3;
+        this.color    = color;
+      }
+      update() {
+        this.x    += this.vx;
+        this.y    += this.vy;
+        this.vx   *= 0.97;
+        this.vy   *= 0.97;
+        this.life -= this.decay;
+      }
+      draw(ctx) {
+        if (this.life <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = this.life;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur  = 12;
+        ctx.fillStyle   = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * this.life, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      get alive() { return this.life > 0; }
+    }
+
+    function spawnBurst(x, y) {
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+      for (let i = 0; i < 35; i++) {
+        if (particles.length < MAX_PARTICLES) {
+          particles.push(new Particle(x, y, color));
+        }
+      }
+    }
+
+    // ─── DRAWING HELPERS ──────────────────────────────────────────
+
+    /** Draw a glowing dot at a landmark position */
+    function drawJoint(x, y, color, radius = 5) {
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur  = 18;
+      ctx.fillStyle   = color;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      // inner white core
+      ctx.shadowBlur = 0;
+      ctx.fillStyle  = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    /** Draw a laser-beam string between two points */
+    function drawLaserBeam(x1, y1, x2, y2, dist) {
+      const t = Math.min(dist / 0.6, 1); // 0 = close, 1 = far
+      // Thickness shrinks with distance
+      const baseWidth = 3.5 - t * 2.5;
+      // Pick color from gradient based on distance
+      const hue = 180 + t * 120; // cyan → magenta sweep
+      const color = `hsl(${hue}, 100%, 60%)`;
+
+      // Outer glow
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur  = 25 + (1 - t) * 20;
+      ctx.lineWidth   = baseWidth + 4;
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Core beam
+      ctx.globalAlpha = 0.85;
+      ctx.lineWidth   = baseWidth;
+      ctx.shadowBlur  = 15;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Inner white-hot core
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur  = 6;
+      ctx.lineWidth   = Math.max(baseWidth * 0.3, 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    /** Draw the skeletal connections of a hand as a subtle silhouette */
+    const HAND_CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],
+      [13,17],[17,18],[18,19],[19,20],
+      [0,17]
+    ];
+
+    function drawHandSilhouette(landmarks, color) {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur  = 8;
+      ctx.lineWidth   = 1.8;
+      ctx.globalAlpha = 0.35;
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const la = landmarks[a];
+        const lb = landmarks[b];
+        ctx.beginPath();
+        ctx.moveTo(la.x * w, la.y * h);
+        ctx.lineTo(lb.x * w, lb.y * h);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    /** CRT scanline overlay */
+    function drawScanlines() {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+      for (let y = 0; y < canvas.height; y += 3) {
+        ctx.fillRect(0, y, canvas.width, 1);
+      }
+      ctx.restore();
+    }
+
+    /** Subtle vignette */
+    function drawVignette() {
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const r  = Math.max(cx, cy) * 1.2;
+      const grad = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, r);
+      grad.addColorStop(0, 'transparent');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
+      ctx.save();
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+
+    // ─── MEDIAPIPE HANDS ──────────────────────────────────────────
+    const hands = new Hands({
+      locateFile: (file) =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`,
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.55,
+    });
+
+    hands.onResults(onResults);
+
+    function onResults(results) {
+      leftHand  = null;
+      rightHand = null;
+
+      if (results.multiHandLandmarks && results.multiHandedness) {
+        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+          const label = results.multiHandedness[i].label; // "Left" / "Right"
+          // Because video is mirrored, MediaPipe "Left" appears on right side of screen
+          if (label === 'Left') {
+            rightHand = results.multiHandLandmarks[i];
+          } else {
+            leftHand = results.multiHandLandmarks[i];
+          }
+        }
+      }
+
+      if (leftHand || rightHand) {
+        if (!handsDetected) {
+          handsDetected = true;
+          const instr = document.getElementById('instructions');
+          if (instr) instr.classList.add('fade');
+        }
+      }
+    }
+
+    // ─── CAMERA ───────────────────────────────────────────────────
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({ image: video });
+      },
+      width: 1280,
+      height: 720,
+    });
+
+    camera.start().then(() => {
+      document.getElementById('loading').classList.add('hidden');
+    });
+
+    // ─── RENDER LOOP ──────────────────────────────────────────────
+    function render() {
+      requestAnimationFrame(render);
+      frameCount++;
+
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // Clear with midnight blue
+      ctx.fillStyle = BG_COLOR;
+      ctx.fillRect(0, 0, W, H);
+
+      // Draw mirrored camera feed faintly (silhouette-like)
+      if (video.readyState >= 2) {
+        ctx.save();
+        ctx.globalAlpha = 0.08;
+        ctx.translate(W, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, W, H);
+        ctx.restore();
+      }
+
+      // Draw hand silhouettes
+      if (leftHand)  drawHandSilhouette(leftHand, CYAN);
+      if (rightHand) drawHandSilhouette(rightHand, MAGENTA);
+
+      // Draw all joints with glow
+      const drawAllJoints = (landmarks, palette) => {
+        for (let i = 0; i < landmarks.length; i++) {
+          const lm = landmarks[i];
+          const isTip = FINGERTIP_IDS.includes(i);
+          const color = palette[i % palette.length];
+          drawJoint(
+            lm.x * W,
+            lm.y * H,
+            color,
+            isTip ? 6 : 3.5
+          );
+        }
+      };
+
+      if (leftHand)  drawAllJoints(leftHand,  [CYAN, '#00ddff', '#00ffaa']);
+      if (rightHand) drawAllJoints(rightHand, [MAGENTA, '#ff44aa', YELLOW]);
+
+      // Draw laser-beam strings between fingertips of both hands
+      if (leftHand && rightHand) {
+        for (let i = 0; i < FINGERTIP_IDS.length; i++) {
+          const li = FINGERTIP_IDS[i];
+          const lm1 = leftHand[li];
+          const lm2 = rightHand[li];
+
+          const x1 = lm1.x * W;
+          const y1 = lm1.y * H;
+          const x2 = lm2.x * W;
+          const y2 = lm2.y * H;
+
+          const dx = lm1.x - lm2.x;
+          const dy = lm1.y - lm2.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          drawLaserBeam(x1, y1, x2, y2, dist);
+
+          // Particle burst on touch
+          if (dist < TOUCH_DIST) {
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            if (frameCount % 3 === 0) {
+              spawnBurst(mx, my);
+            }
+          }
+        }
+
+        // Also draw cross-strings for extra cradle feel (thumb→pinky, pinky→thumb)
+        const crossPairs = [
+          [FINGERTIP_IDS[0], FINGERTIP_IDS[4]],
+          [FINGERTIP_IDS[1], FINGERTIP_IDS[3]],
+        ];
+        for (const [li, ri] of crossPairs) {
+          const lm1 = leftHand[li];
+          const lm2 = rightHand[ri];
+          const x1 = lm1.x * W;
+          const y1 = lm1.y * H;
+          const x2 = lm2.x * W;
+          const y2 = lm2.y * H;
+          const dx = lm1.x - lm2.x;
+          const dy = lm1.y - lm2.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          ctx.save();
+          ctx.globalAlpha = 0.4;
+          drawLaserBeam(x1, y1, x2, y2, dist);
+          ctx.restore();
+        }
+      }
+
+      // Update & draw particles
+      particles = particles.filter(p => p.alive);
+      for (const p of particles) {
+        p.update();
+        p.draw(ctx);
+      }
+
+      // Post-processing
+      drawVignette();
+      drawScanlines();
+    }
+
+    render();
+  })();
+  </script>
+</body>
+</html>
