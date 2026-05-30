@@ -11,7 +11,7 @@ const MCPS = [1, 5, 9, 13, 17];
 const ALL_IDS = Array.from({ length: 21 }, (_, i) => i);
 
 const MAX_PARTICLES = 1200;
-const MAX_SPARKLES = 500;
+const MAX_SPARKLES = 800;
 const TOUCH_DIST = 0.055;
 
 // Colors
@@ -243,8 +243,7 @@ function drawWire(ctx, x1, y1, x2, y2, dist, hue, alpha) {
   const color = `hsl(${hue}, 90%, 65%)`;
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 4;
+  // Removed shadowBlur to eliminate lag for hundreds of wires
   ctx.lineWidth = 0.5 + (1 - t) * 0.5;
   ctx.globalAlpha = alpha * (1 - t);
   ctx.beginPath();
@@ -344,8 +343,8 @@ export default function CatsCradle() {
       const tip = lm[TIPS[i]];
       const x = tip.x * W, y = tip.y * H;
       const col = colors[i % colors.length];
-      // Emit 2-3 sparkles per tip per frame
-      for (let j = 0; j < 2 + Math.floor(Math.random() * 2); j++) {
+      // Emit 3-5 sparkles per tip per frame for more magic
+      for (let j = 0; j < 3 + Math.floor(Math.random() * 3); j++) {
         if (sparklesRef.current.length < MAX_SPARKLES) {
           sparklesRef.current.push(new Sparkle(x, y, col));
         }
@@ -537,8 +536,8 @@ export default function CatsCradle() {
         rightRef.current = null;
         if (r.multiHandLandmarks && r.multiHandedness) {
           for (let i = 0; i < r.multiHandLandmarks.length; i++) {
-            if (r.multiHandedness[i].label === 'Left') rightRef.current = r.multiHandLandmarks[i];
-            else leftRef.current = r.multiHandLandmarks[i];
+            if (r.multiHandedness[i].label === 'Left') leftRef.current = r.multiHandLandmarks[i];
+            else rightRef.current = r.multiHandLandmarks[i];
           }
         }
         if (leftRef.current || rightRef.current) setDetected(true);
