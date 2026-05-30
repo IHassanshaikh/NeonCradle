@@ -429,16 +429,24 @@ export default function CatsCradle() {
     // ── INTER-HAND WIRES ──
     if (leftHand && rightHand) {
 
-      // Dense thin wire web: ALL 21×21 landmark pairs
-      for (let a = 0; a < 21; a++) {
+      // Dense thin wire web: Fingertips to all joints
+      for (const a of TIPS) {
         for (let b = 0; b < 21; b++) {
           const la = leftHand[a], lb = rightHand[b];
           const dist = lmDist(la, lb);
-          if (dist > 0.65) continue; // cull far wires for perf
-          const hue = (a * 17 + b * 29) % 360;
-          const isTipPair = TIPS.includes(a) && TIPS.includes(b);
-          const alpha = isTipPair ? 0.15 : 0.06;
-          drawWire(ctx, la.x * W, la.y * H, lb.x * W, lb.y * H, dist, hue, alpha);
+          if (dist <= 0.65) {
+            const hue = (a * 17 + b * 29) % 360;
+            const alpha = TIPS.includes(b) ? 0.15 : 0.05;
+            drawWire(ctx, la.x * W, la.y * H, lb.x * W, lb.y * H, dist, hue, alpha);
+          }
+          // And the reverse: right tip to left joint
+          const ra = rightHand[a], rb = leftHand[b];
+          const dist2 = lmDist(ra, rb);
+          if (dist2 <= 0.65) {
+            const hue2 = (b * 17 + a * 29) % 360;
+            const alpha2 = TIPS.includes(b) ? 0.15 : 0.05;
+            drawWire(ctx, ra.x * W, ra.y * H, rb.x * W, rb.y * H, dist2, hue2, alpha2);
+          }
         }
       }
 
@@ -534,10 +542,23 @@ export default function CatsCradle() {
         if (!alive) return;
         leftRef.current = null;
         rightRef.current = null;
-        if (r.multiHandLandmarks && r.multiHandedness) {
-          for (let i = 0; i < r.multiHandLandmarks.length; i++) {
-            if (r.multiHandedness[i].label === 'Left') leftRef.current = r.multiHandLandmarks[i];
-            else rightRef.current = r.multiHandLandmarks[i];
+        if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
+          // Determine hands by x-coordinate for foolproof mirror-handling
+          if (r.multiHandLandmarks.length === 1) {
+            const lm = r.multiHandLandmarks[0];
+            // x > 0.5 in raw video = left side of mirrored screen
+            if (lm[0].x > 0.5) leftRef.current = lm;
+            else rightRef.current = lm;
+          } else {
+            const lm0 = r.multiHandLandmarks[0];
+            const lm1 = r.multiHandLandmarks[1];
+            if (lm0[0].x > lm1[0].x) {
+              leftRef.current = lm0;
+              rightRef.current = lm1;
+            } else {
+              leftRef.current = lm1;
+              rightRef.current = lm0;
+            }
           }
         }
         if (leftRef.current || rightRef.current) setDetected(true);
