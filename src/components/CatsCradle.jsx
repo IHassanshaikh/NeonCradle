@@ -1,85 +1,118 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import './CatsCradle.css';
 
-/* MediaPipe loaded via CDN in index.html → window.Hands / window.Camera */
+/* MediaPipe loaded via CDN → window.Hands / window.Camera */
 
-// ─── LANDMARK GROUPS ──────────────────────────────────────
-const FINGERTIP_IDS = [4, 8, 12, 16, 20];
-const FINGER_DIP    = [3, 7, 11, 15, 19];
-const FINGER_PIP    = [2, 6, 10, 14, 18];
-const FINGER_MCP    = [1, 5, 9, 13, 17];
+// ─── LANDMARK INDICES ─────────────────────────────────────
+const TIPS = [4, 8, 12, 16, 20];
+const DIPS = [3, 7, 11, 15, 19];
+const PIPS = [2, 6, 10, 14, 18];
+const MCPS = [1, 5, 9, 13, 17];
+const ALL_IDS = Array.from({ length: 21 }, (_, i) => i);
 
-const TOUCH_DIST = 0.05;
-const MAX_PARTICLES = 800;
+const MAX_PARTICLES = 1200;
+const MAX_SPARKLES = 500;
+const TOUCH_DIST = 0.055;
 
-// ── Color palettes ──
-const LEFT_COLOR  = { main: '#ff44cc', glow: '#ff00aa', mesh: 'rgba(255, 0, 170, 0.12)', joint: '#ff66dd' };
-const RIGHT_COLOR = { main: '#44ff88', glow: '#00ff66', mesh: 'rgba(0, 255, 100, 0.12)', joint: '#66ffaa' };
-const BEAM_COLORS = ['#ff0066', '#ff4400', '#ffaa00', '#44ff00', '#00ffcc', '#00aaff', '#8844ff', '#ff00ff'];
-const PARTICLE_COLORS = ['#ff44cc', '#44ff88', '#ffaa00', '#00ffcc', '#ff0066', '#aa44ff'];
+// Colors
+const L_COL = { mesh: 'rgba(255,0,170,0.10)', bone: '#ff44cc', joint: '#ff66ee', sparkle: ['#ff44cc','#ff88ee','#ffaaff','#ff00aa','#ff66bb'] };
+const R_COL = { mesh: 'rgba(0,255,120,0.10)', bone: '#33ff88', joint: '#66ffaa', sparkle: ['#33ff88','#88ffcc','#aaffdd','#00ff66','#66ffaa'] };
+const BEAM_HUES = [0, 30, 60, 120, 170, 200, 260, 300]; // rainbow
+const PARTICLE_COLORS = ['#ff44cc','#44ff88','#ffaa00','#00ffee','#ff0066','#aa44ff','#ffff44','#00aaff'];
 
-// ── Hand skeleton connections ──
-const HAND_CONNECTIONS = [
-  [0,1],[1,2],[2,3],[3,4],
-  [0,5],[5,6],[6,7],[7,8],
-  [5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],
-  [13,17],[17,18],[18,19],[19,20],
-  [0,17],
+// Skeleton
+const BONES = [
+  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17],
 ];
 
-// ── Mesh triangles to fill the hand surface ──
-const HAND_MESH_TRIS = [
-  // Palm
-  [0, 1, 5], [0, 5, 17], [5, 9, 17], [9, 13, 17],
-  // Thumb
-  [1, 2, 5], [2, 3, 5], [3, 4, 5],
-  // Index
-  [5, 6, 9], [6, 7, 9], [7, 8, 9],
-  // Middle
-  [9, 10, 13], [10, 11, 13], [11, 12, 13],
-  // Ring
-  [13, 14, 17], [14, 15, 17], [15, 16, 17],
-  // Pinky
-  [17, 18, 0], [18, 19, 0], [19, 20, 0],
+// Triangles for filled mesh
+const MESH_TRIS = [
+  [0,1,5],[0,5,17],[5,9,17],[9,13,17],
+  [1,2,5],[2,3,5],[3,4,5],
+  [5,6,9],[6,7,9],[7,8,9],
+  [9,10,13],[10,11,13],[11,12,13],
+  [13,14,17],[14,15,17],[15,16,17],
+  [17,18,0],[18,19,0],[19,20,0],
 ];
 
-// ── Inter-hand beam pairs: each fingertip to EVERY other fingertip ──
-const ALL_BEAM_PAIRS = [];
-for (const a of FINGERTIP_IDS) {
-  for (const b of FINGERTIP_IDS) {
-    ALL_BEAM_PAIRS.push([a, b]);
+// Build wire pairs: every landmark to every landmark = dense web
+const WIRE_PAIRS_ALL = [];
+for (let a = 0; a < 21; a++) {
+  for (let b = 0; b < 21; b++) {
+    WIRE_PAIRS_ALL.push([a, b]);
   }
 }
 
-// ── Intra-hand fingertip web ──
-const INTRA_HAND_PAIRS = [];
-for (let i = 0; i < FINGERTIP_IDS.length; i++) {
-  for (let j = i + 1; j < FINGERTIP_IDS.length; j++) {
-    INTRA_HAND_PAIRS.push([FINGERTIP_IDS[i], FINGERTIP_IDS[j]]);
-  }
-}
-
-// ─── PARTICLE ─────────────────────────────────────────────
-class Particle {
+// ─── SPARKLE (tiny fast-fading magic dust) ────────────────
+class Sparkle {
   constructor(x, y, color) {
-    this.x = x;
-    this.y = y;
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 2 + Math.random() * 7;
-    this.vx = Math.cos(angle) * speed;
-    this.vy = Math.sin(angle) * speed;
+    this.x = x; this.y = y;
+    const a = Math.random() * Math.PI * 2;
+    const s = 0.5 + Math.random() * 3;
+    this.vx = Math.cos(a) * s + (Math.random() - 0.5) * 2;
+    this.vy = Math.sin(a) * s - Math.random() * 1.5; // drift upward
     this.life = 1;
-    this.decay = 0.012 + Math.random() * 0.02;
-    this.radius = 1.5 + Math.random() * 4;
+    this.decay = 0.03 + Math.random() * 0.04;
+    this.radius = 0.8 + Math.random() * 2.2;
     this.color = color;
+    this.twinkle = Math.random() * Math.PI * 2;
+    this.twinkleSpeed = 0.1 + Math.random() * 0.2;
   }
   update() {
     this.x += this.vx;
     this.y += this.vy;
-    this.vx *= 0.96;
-    this.vy *= 0.96;
-    this.vy += 0.06;
+    this.vx *= 0.95;
+    this.vy *= 0.95;
+    this.vy -= 0.02; // float up
+    this.life -= this.decay;
+    this.twinkle += this.twinkleSpeed;
+  }
+  draw(ctx) {
+    if (this.life <= 0) return;
+    const flicker = 0.5 + 0.5 * Math.sin(this.twinkle);
+    ctx.save();
+    ctx.globalAlpha = this.life * flicker;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius * this.life, 0, Math.PI * 2);
+    ctx.fill();
+    // tiny star cross
+    if (this.radius > 1.5) {
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 0.4;
+      ctx.globalAlpha = this.life * flicker * 0.5;
+      const r = this.radius * this.life * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(this.x - r, this.y); ctx.lineTo(this.x + r, this.y);
+      ctx.moveTo(this.x, this.y - r); ctx.lineTo(this.x, this.y + r);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  get alive() { return this.life > 0; }
+}
+
+// ─── BURST PARTICLE (bigger, for touch explosions) ────────
+class Particle {
+  constructor(x, y, color) {
+    this.x = x; this.y = y;
+    const a = Math.random() * Math.PI * 2;
+    const s = 2 + Math.random() * 8;
+    this.vx = Math.cos(a) * s;
+    this.vy = Math.sin(a) * s;
+    this.life = 1;
+    this.decay = 0.01 + Math.random() * 0.02;
+    this.radius = 2 + Math.random() * 4;
+    this.color = color;
+  }
+  update() {
+    this.x += this.vx; this.y += this.vy;
+    this.vx *= 0.96; this.vy *= 0.96;
+    this.vy += 0.05;
     this.life -= this.decay;
   }
   draw(ctx) {
@@ -87,7 +120,7 @@ class Particle {
     ctx.save();
     ctx.globalAlpha = this.life;
     ctx.shadowColor = this.color;
-    ctx.shadowBlur = 16;
+    ctx.shadowBlur = 18;
     ctx.fillStyle = this.color;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius * this.life, 0, Math.PI * 2);
@@ -97,19 +130,61 @@ class Particle {
   get alive() { return this.life > 0; }
 }
 
+// ─── AMBIENT FLOATING MOTE ───────────────────────────────
+class AmbientMote {
+  constructor(W, H) {
+    this.x = Math.random() * W;
+    this.y = Math.random() * H;
+    this.vx = (Math.random() - 0.5) * 0.3;
+    this.vy = -0.1 - Math.random() * 0.3;
+    this.radius = 0.5 + Math.random() * 1.5;
+    this.alpha = 0.1 + Math.random() * 0.2;
+    this.phase = Math.random() * Math.PI * 2;
+    this.color = PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)];
+    this.W = W; this.H = H;
+  }
+  update() {
+    this.x += this.vx + Math.sin(this.phase) * 0.2;
+    this.y += this.vy;
+    this.phase += 0.02;
+    if (this.y < -10) { this.y = this.H + 10; this.x = Math.random() * this.W; }
+    if (this.x < -10) this.x = this.W + 10;
+    if (this.x > this.W + 10) this.x = -10;
+  }
+  draw(ctx) {
+    const flicker = 0.6 + 0.4 * Math.sin(this.phase * 3);
+    ctx.save();
+    ctx.globalAlpha = this.alpha * flicker;
+    ctx.fillStyle = this.color;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 // ─── DRAWING HELPERS ──────────────────────────────────────
 
 function lmDist(a, b) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
-/** Filled semi-transparent mesh surface over the hand */
-function drawHandMesh(ctx, lm, meshColor, W, H) {
+/** Lerp between two landmark sets for smoothing */
+function lerpLandmarks(prev, curr, t) {
+  if (!prev) return curr;
+  return curr.map((c, i) => ({
+    x: prev[i].x + (c.x - prev[i].x) * t,
+    y: prev[i].y + (c.y - prev[i].y) * t,
+    z: prev[i].z + (c.z - prev[i].z) * t,
+  }));
+}
+
+function drawHandMesh(ctx, lm, color, W, H) {
   ctx.save();
-  ctx.fillStyle = meshColor;
-  for (const [a, b, c] of HAND_MESH_TRIS) {
+  ctx.fillStyle = color;
+  for (const [a, b, c] of MESH_TRIS) {
     ctx.beginPath();
     ctx.moveTo(lm[a].x * W, lm[a].y * H);
     ctx.lineTo(lm[b].x * W, lm[b].y * H);
@@ -120,15 +195,14 @@ function drawHandMesh(ctx, lm, meshColor, W, H) {
   ctx.restore();
 }
 
-/** Hand skeleton with colored bones */
-function drawHandSkeleton(ctx, lm, color, W, H) {
+function drawSkeleton(ctx, lm, color, W, H) {
   ctx.save();
   ctx.strokeStyle = color;
   ctx.shadowColor = color;
-  ctx.shadowBlur = 6;
+  ctx.shadowBlur = 8;
   ctx.lineWidth = 2.5;
-  ctx.globalAlpha = 0.65;
-  for (const [a, b] of HAND_CONNECTIONS) {
+  ctx.globalAlpha = 0.6;
+  for (const [a, b] of BONES) {
     ctx.beginPath();
     ctx.moveTo(lm[a].x * W, lm[a].y * H);
     ctx.lineTo(lm[b].x * W, lm[b].y * H);
@@ -137,94 +211,42 @@ function drawHandSkeleton(ctx, lm, color, W, H) {
   ctx.restore();
 }
 
-/** Glowing joint dot */
-function drawJoint(ctx, x, y, color, radius) {
+function drawJoint(ctx, x, y, color, r) {
   ctx.save();
   ctx.shadowColor = color;
-  ctx.shadowBlur = 22;
+  ctx.shadowBlur = 24;
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
-  // hot white core
   ctx.shadowBlur = 0;
-  ctx.globalAlpha = 0.8;
-  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = '#fff';
   ctx.beginPath();
-  ctx.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+  ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
 
-/** Draw all joints on a hand */
 function drawAllJoints(ctx, lm, color, W, H) {
   for (let i = 0; i < lm.length; i++) {
-    const isTip = FINGERTIP_IDS.includes(i);
-    const r = isTip ? 7 : FINGER_MCP.includes(i) ? 5 : 3.5;
+    const isTip = TIPS.includes(i);
+    const r = isTip ? 7 : MCPS.includes(i) ? 5 : 3.5;
     drawJoint(ctx, lm[i].x * W, lm[i].y * H, color, r);
   }
 }
 
-/** Thick rainbow laser beam between hands */
-function drawRainbowBeam(ctx, x1, y1, x2, y2, dist, colorIndex) {
-  const t = Math.min(dist / 0.5, 1);
-  const color = BEAM_COLORS[colorIndex % BEAM_COLORS.length];
-  const baseWidth = 4 - t * 3;
-
+/** Ultra-thin gossamer wire */
+function drawWire(ctx, x1, y1, x2, y2, dist, hue, alpha) {
+  const t = Math.min(dist / 0.65, 1);
+  if (t > 0.95) return; // fade out when too far
+  const color = `hsl(${hue}, 90%, 65%)`;
   ctx.save();
-
-  // Wide outer glow
   ctx.strokeStyle = color;
   ctx.shadowColor = color;
-  ctx.shadowBlur = 30 + (1 - t) * 25;
-  ctx.lineWidth = baseWidth + 6;
-  ctx.globalAlpha = 0.15;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-
-  // Main beam
-  ctx.globalAlpha = 0.75;
-  ctx.lineWidth = baseWidth + 2;
-  ctx.shadowBlur = 18;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-
-  // Core
-  ctx.globalAlpha = 0.9;
-  ctx.lineWidth = baseWidth;
-  ctx.shadowBlur = 10;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-
-  // White-hot center
-  ctx.globalAlpha = 0.45;
-  ctx.strokeStyle = '#ffffff';
-  ctx.shadowColor = '#ffffff';
   ctx.shadowBlur = 4;
-  ctx.lineWidth = Math.max(baseWidth * 0.35, 0.5);
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-/** Thin thread wire for subtle connections */
-function drawThread(ctx, x1, y1, x2, y2, dist, color, alpha = 0.2) {
-  const t = Math.min(dist / 0.6, 1);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 5;
-  ctx.lineWidth = 0.8 + (1 - t) * 0.6;
-  ctx.globalAlpha = alpha * (1 - t * 0.6);
+  ctx.lineWidth = 0.5 + (1 - t) * 0.5;
+  ctx.globalAlpha = alpha * (1 - t);
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
@@ -232,38 +254,47 @@ function drawThread(ctx, x1, y1, x2, y2, dist, color, alpha = 0.2) {
   ctx.restore();
 }
 
-/** HUD overlay */
-function drawHUD(ctx, leftHand, rightHand, fps) {
-  const handCount = (leftHand ? 1 : 0) + (rightHand ? 1 : 0);
+/** Thick primary rainbow beam */
+function drawBeam(ctx, x1, y1, x2, y2, dist, hue) {
+  const t = Math.min(dist / 0.5, 1);
+  const color = `hsl(${hue}, 100%, 60%)`;
+  const w = 4 - t * 3;
 
   ctx.save();
+  // Wide glow
+  ctx.strokeStyle = color; ctx.shadowColor = color;
+  ctx.shadowBlur = 35 + (1 - t) * 20;
+  ctx.lineWidth = w + 6; ctx.globalAlpha = 0.12;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  // Main
+  ctx.globalAlpha = 0.7; ctx.lineWidth = w + 2; ctx.shadowBlur = 16;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  // Core
+  ctx.globalAlpha = 0.85; ctx.lineWidth = w; ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  // White hot
+  ctx.globalAlpha = 0.4; ctx.strokeStyle = '#fff'; ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 4; ctx.lineWidth = Math.max(w * 0.3, 0.5);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.restore();
+}
 
-  // Background pill
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-  ctx.beginPath();
-  ctx.roundRect(14, 14, 90, 62, 8);
-  ctx.fill();
-
-  // Hand count
-  ctx.fillStyle = '#00ffcc';
-  ctx.font = 'bold 22px Outfit, sans-serif';
-  ctx.fillText(`🖐 ${handCount}`, 24, 40);
-
-  // FPS
-  ctx.fillStyle = 'rgba(170, 220, 200, 0.7)';
-  ctx.font = '12px Outfit, sans-serif';
+function drawHUD(ctx, L, R, fps) {
+  const n = (L ? 1 : 0) + (R ? 1 : 0);
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath(); ctx.roundRect(14, 14, 95, 62, 8); ctx.fill();
+  ctx.fillStyle = '#00ffcc'; ctx.font = 'bold 22px Outfit, sans-serif';
+  ctx.fillText(`🖐 ${n}`, 24, 40);
+  ctx.fillStyle = 'rgba(170,220,200,0.65)'; ctx.font = '12px Outfit, sans-serif';
   ctx.fillText(`${fps} FPS`, 26, 62);
-
   ctx.restore();
 }
 
-/** Subtle scanlines */
 function drawScanlines(ctx, W, H) {
   ctx.save();
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.04)';
-  for (let y = 0; y < H; y += 4) {
-    ctx.fillRect(0, y, W, 1);
-  }
+  ctx.fillStyle = 'rgba(0,0,0,0.035)';
+  for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
   ctx.restore();
 }
 
@@ -275,28 +306,54 @@ export default function CatsCradle() {
   const rafRef = useRef(null);
   const cameraRef = useRef(null);
   const handsRef = useRef(null);
+
   const particlesRef = useRef([]);
-  const frameCountRef = useRef(0);
-  const leftHandRef = useRef(null);
-  const rightHandRef = useRef(null);
+  const sparklesRef = useRef([]);
+  const ambientRef = useRef([]);
+
+  const frameRef = useRef(0);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+  const prevLeftRef = useRef(null);
+  const prevRightRef = useRef(null);
+
   const fpsRef = useRef(0);
-  const fpsFrames = useRef(0);
-  const fpsTime = useRef(performance.now());
+  const fpsCnt = useRef(0);
+  const fpsT = useRef(performance.now());
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [handsDetected, setHandsDetected] = useState(false);
+  const [detected, setDetected] = useState(false);
+
+  // Init ambient motes
+  const initAmbient = useCallback((W, H) => {
+    if (ambientRef.current.length === 0) {
+      for (let i = 0; i < 60; i++) ambientRef.current.push(new AmbientMote(W, H));
+    }
+  }, []);
 
   const spawnBurst = useCallback((x, y) => {
-    const color = PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)];
-    for (let i = 0; i < 40; i++) {
-      if (particlesRef.current.length < MAX_PARTICLES) {
-        particlesRef.current.push(new Particle(x, y, color));
+    const c = PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)];
+    for (let i = 0; i < 45; i++) {
+      if (particlesRef.current.length < MAX_PARTICLES) particlesRef.current.push(new Particle(x, y, c));
+    }
+  }, []);
+
+  const emitSparkles = useCallback((lm, colors, W, H) => {
+    for (let i = 0; i < TIPS.length; i++) {
+      const tip = lm[TIPS[i]];
+      const x = tip.x * W, y = tip.y * H;
+      const col = colors[i % colors.length];
+      // Emit 2-3 sparkles per tip per frame
+      for (let j = 0; j < 2 + Math.floor(Math.random() * 2); j++) {
+        if (sparklesRef.current.length < MAX_SPARKLES) {
+          sparklesRef.current.push(new Sparkle(x, y, col));
+        }
       }
     }
   }, []);
 
-  // ── Main render loop ──
+  // ── RENDER LOOP ──
   const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -305,236 +362,204 @@ export default function CatsCradle() {
     const ctx = canvas.getContext('2d');
     const W = canvas.width;
     const H = canvas.height;
-    frameCountRef.current++;
+    frameRef.current++;
 
-    // FPS counter
-    fpsFrames.current++;
+    // FPS
+    fpsCnt.current++;
     const now = performance.now();
-    if (now - fpsTime.current >= 1000) {
-      fpsRef.current = fpsFrames.current;
-      fpsFrames.current = 0;
-      fpsTime.current = now;
+    if (now - fpsT.current >= 1000) {
+      fpsRef.current = fpsCnt.current;
+      fpsCnt.current = 0;
+      fpsT.current = now;
     }
 
-    // ── Draw camera feed as background (clearly visible, mirrored) ──
+    initAmbient(W, H);
+
+    // ── Camera feed (clearly visible, mirrored) ──
     if (video.readyState >= 2) {
       ctx.save();
-      ctx.translate(W, 0);
-      ctx.scale(-1, 1);
+      ctx.translate(W, 0); ctx.scale(-1, 1);
       ctx.drawImage(video, 0, 0, W, H);
       ctx.restore();
     } else {
-      ctx.fillStyle = '#111';
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
     }
 
-    // Slight dim overlay for contrast
+    // Light dim for contrast
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 20, 0.15)';
+    ctx.fillStyle = 'rgba(0,0,15,0.12)';
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
 
-    const leftHand = leftHandRef.current;
-    const rightHand = rightHandRef.current;
+    // ── Ambient floating motes ──
+    for (const m of ambientRef.current) { m.update(); m.draw(ctx); }
+
+    // Smooth landmarks with lerp
+    let leftHand = leftRef.current;
+    let rightHand = rightRef.current;
+
+    if (leftHand) {
+      leftHand = lerpLandmarks(prevLeftRef.current, leftHand, 0.55);
+      prevLeftRef.current = leftHand;
+    } else {
+      prevLeftRef.current = null;
+    }
+    if (rightHand) {
+      rightHand = lerpLandmarks(prevRightRef.current, rightHand, 0.55);
+      prevRightRef.current = rightHand;
+    } else {
+      prevRightRef.current = null;
+    }
 
     // ── LEFT HAND ──
     if (leftHand) {
-      drawHandMesh(ctx, leftHand, LEFT_COLOR.mesh, W, H);
-      drawHandSkeleton(ctx, leftHand, LEFT_COLOR.main, W, H);
-      drawAllJoints(ctx, leftHand, LEFT_COLOR.joint, W, H);
+      drawHandMesh(ctx, leftHand, L_COL.mesh, W, H);
+      drawSkeleton(ctx, leftHand, L_COL.bone, W, H);
+      drawAllJoints(ctx, leftHand, L_COL.joint, W, H);
+      emitSparkles(leftHand, L_COL.sparkle, W, H);
     }
 
     // ── RIGHT HAND ──
     if (rightHand) {
-      drawHandMesh(ctx, rightHand, RIGHT_COLOR.mesh, W, H);
-      drawHandSkeleton(ctx, rightHand, RIGHT_COLOR.main, W, H);
-      drawAllJoints(ctx, rightHand, RIGHT_COLOR.joint, W, H);
+      drawHandMesh(ctx, rightHand, R_COL.mesh, W, H);
+      drawSkeleton(ctx, rightHand, R_COL.bone, W, H);
+      drawAllJoints(ctx, rightHand, R_COL.joint, W, H);
+      emitSparkles(rightHand, R_COL.sparkle, W, H);
     }
 
-    // ── INTER-HAND BEAMS ──
+    // ── INTER-HAND WIRES ──
     if (leftHand && rightHand) {
 
-      // Subtle thread web: every fingertip cross
-      let threadIdx = 0;
-      for (const [li, ri] of ALL_BEAM_PAIRS) {
-        if (li === ri) continue; // skip primary pairs for threads
-        const lm1 = leftHand[li];
-        const lm2 = rightHand[ri];
-        const x1 = lm1.x * W, y1 = lm1.y * H;
-        const x2 = lm2.x * W, y2 = lm2.y * H;
-        const dist = lmDist(lm1, lm2);
-        const color = BEAM_COLORS[threadIdx % BEAM_COLORS.length];
-        drawThread(ctx, x1, y1, x2, y2, dist, color, 0.1);
-        threadIdx++;
+      // Dense thin wire web: ALL 21×21 landmark pairs
+      for (let a = 0; a < 21; a++) {
+        for (let b = 0; b < 21; b++) {
+          const la = leftHand[a], lb = rightHand[b];
+          const dist = lmDist(la, lb);
+          if (dist > 0.65) continue; // cull far wires for perf
+          const hue = (a * 17 + b * 29) % 360;
+          const isTipPair = TIPS.includes(a) && TIPS.includes(b);
+          const alpha = isTipPair ? 0.15 : 0.06;
+          drawWire(ctx, la.x * W, la.y * H, lb.x * W, lb.y * H, dist, hue, alpha);
+        }
       }
 
-      // Primary rainbow beams: matching fingertips
-      for (let i = 0; i < FINGERTIP_IDS.length; i++) {
-        const id = FINGERTIP_IDS[i];
-        const lm1 = leftHand[id];
-        const lm2 = rightHand[id];
-        const x1 = lm1.x * W, y1 = lm1.y * H;
-        const x2 = lm2.x * W, y2 = lm2.y * H;
-        const dist = lmDist(lm1, lm2);
+      // Medium beams: DIP + PIP + MCP matching pairs
+      const mediumPairs = [...DIPS.map((id) => [id, id]), ...PIPS.map((id) => [id, id]), ...MCPS.map((id) => [id, id])];
+      mediumPairs.push([0, 0]); // wrist
+      for (let i = 0; i < mediumPairs.length; i++) {
+        const [li, ri] = mediumPairs[i];
+        const la = leftHand[li], lb = rightHand[ri];
+        const dist = lmDist(la, lb);
+        const hue = BEAM_HUES[i % BEAM_HUES.length];
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        drawBeam(ctx, la.x * W, la.y * H, lb.x * W, lb.y * H, dist, hue);
+        ctx.restore();
+      }
 
-        drawRainbowBeam(ctx, x1, y1, x2, y2, dist, i);
+      // Primary beams: fingertip matching pairs (brightest)
+      for (let i = 0; i < TIPS.length; i++) {
+        const la = leftHand[TIPS[i]], lb = rightHand[TIPS[i]];
+        const x1 = la.x * W, y1 = la.y * H;
+        const x2 = lb.x * W, y2 = lb.y * H;
+        const dist = lmDist(la, lb);
+        const hue = BEAM_HUES[i % BEAM_HUES.length];
+        drawBeam(ctx, x1, y1, x2, y2, dist, hue);
 
-        if (dist < TOUCH_DIST && frameCountRef.current % 3 === 0) {
+        if (dist < TOUCH_DIST && frameRef.current % 3 === 0) {
           spawnBurst((x1 + x2) / 2, (y1 + y2) / 2);
         }
       }
 
-      // Secondary beams: knuckle pairs
-      for (let i = 0; i < FINGER_MCP.length; i++) {
-        const id = FINGER_MCP[i];
-        const lm1 = leftHand[id];
-        const lm2 = rightHand[id];
-        const x1 = lm1.x * W, y1 = lm1.y * H;
-        const x2 = lm2.x * W, y2 = lm2.y * H;
-        const dist = lmDist(lm1, lm2);
-
-        ctx.save();
-        ctx.globalAlpha = 0.5;
-        drawRainbowBeam(ctx, x1, y1, x2, y2, dist, i + 5);
-        ctx.restore();
-      }
-
-      // Wrist beam
-      {
-        const lm1 = leftHand[0];
-        const lm2 = rightHand[0];
-        const dist = lmDist(lm1, lm2);
-        ctx.save();
-        ctx.globalAlpha = 0.35;
-        drawRainbowBeam(ctx, lm1.x * W, lm1.y * H, lm2.x * W, lm2.y * H, dist, 7);
-        ctx.restore();
-      }
-
-      // Cross-finger particle bursts
-      for (const id of FINGERTIP_IDS) {
-        for (const id2 of FINGERTIP_IDS) {
-          if (id === id2) continue;
-          const d = lmDist(leftHand[id], rightHand[id2]);
-          if (d < TOUCH_DIST * 0.8 && frameCountRef.current % 5 === 0) {
-            const mx = (leftHand[id].x * W + rightHand[id2].x * W) / 2;
-            const my = (leftHand[id].y * H + rightHand[id2].y * H) / 2;
-            spawnBurst(mx, my);
+      // Cross fingertip touch detection
+      for (const a of TIPS) {
+        for (const b of TIPS) {
+          if (a === b) continue;
+          const d = lmDist(leftHand[a], rightHand[b]);
+          if (d < TOUCH_DIST * 0.8 && frameRef.current % 6 === 0) {
+            spawnBurst(
+              (leftHand[a].x * W + rightHand[b].x * W) / 2,
+              (leftHand[a].y * H + rightHand[b].y * H) / 2
+            );
           }
         }
       }
     }
 
-    // ── Particles ──
+    // ── Sparkles ──
+    sparklesRef.current = sparklesRef.current.filter((s) => s.alive);
+    for (const s of sparklesRef.current) { s.update(); s.draw(ctx); }
+
+    // ── Burst particles ──
     particlesRef.current = particlesRef.current.filter((p) => p.alive);
-    for (const p of particlesRef.current) {
-      p.update();
-      p.draw(ctx);
-    }
+    for (const p of particlesRef.current) { p.update(); p.draw(ctx); }
 
     // ── Post-processing ──
     drawScanlines(ctx, W, H);
     drawHUD(ctx, leftHand, rightHand, fpsRef.current);
 
     rafRef.current = requestAnimationFrame(renderLoop);
-  }, [spawnBurst]);
+  }, [spawnBurst, emitSparkles, initAmbient]);
 
   // Resize
   useEffect(() => {
-    const handleResize = () => {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-      }
+    const resize = () => {
+      const c = canvasRef.current;
+      if (c) { c.width = window.innerWidth; c.height = window.innerHeight; }
     };
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
   }, []);
 
   // MediaPipe + Camera
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-
-    let isMounted = true;
-    let pollTimer = null;
+    let alive = true;
+    let poll = null;
 
     function init() {
-      if (!window.Hands || !window.Camera) {
-        pollTimer = setTimeout(init, 100);
-        return;
-      }
+      if (!window.Hands || !window.Camera) { poll = setTimeout(init, 100); return; }
 
       const hands = new window.Hands({
-        locateFile: (file) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`,
+        locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`,
       });
-
       hands.setOptions({
         maxNumHands: 2,
         modelComplexity: 1,
-        minDetectionConfidence: 0.4,
-        minTrackingConfidence: 0.3,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.4,
       });
-
-      hands.onResults((results) => {
-        if (!isMounted) return;
-
-        leftHandRef.current = null;
-        rightHandRef.current = null;
-
-        if (results.multiHandLandmarks && results.multiHandedness) {
-          for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-            const label = results.multiHandedness[i].label;
-            if (label === 'Left') {
-              rightHandRef.current = results.multiHandLandmarks[i];
-            } else {
-              leftHandRef.current = results.multiHandLandmarks[i];
-            }
+      hands.onResults((r) => {
+        if (!alive) return;
+        leftRef.current = null;
+        rightRef.current = null;
+        if (r.multiHandLandmarks && r.multiHandedness) {
+          for (let i = 0; i < r.multiHandLandmarks.length; i++) {
+            if (r.multiHandedness[i].label === 'Left') rightRef.current = r.multiHandLandmarks[i];
+            else leftRef.current = r.multiHandLandmarks[i];
           }
         }
-
-        if (leftHandRef.current || rightHandRef.current) {
-          setHandsDetected(true);
-        }
+        if (leftRef.current || rightRef.current) setDetected(true);
       });
-
       handsRef.current = hands;
 
       const cam = new window.Camera(video, {
-        onFrame: async () => {
-          await hands.send({ image: video });
-        },
-        width: 1280,
-        height: 720,
+        onFrame: async () => { await hands.send({ image: video }); },
+        width: 1280, height: 720,
       });
-
       cameraRef.current = cam;
-
-      cam
-        .start()
-        .then(() => { if (isMounted) setLoading(false); })
-        .catch((err) => {
-          if (isMounted) {
-            setError('Camera access was denied or is unavailable.');
-            setLoading(false);
-            console.error(err);
-          }
-        });
+      cam.start()
+        .then(() => { if (alive) setLoading(false); })
+        .catch((e) => { if (alive) { setError('Camera access denied.'); setLoading(false); console.error(e); } });
     }
 
     init();
-
-    return () => {
-      isMounted = false;
-      if (pollTimer) clearTimeout(pollTimer);
-      cameraRef.current?.stop?.();
-      handsRef.current?.close?.();
-    };
+    return () => { alive = false; if (poll) clearTimeout(poll); cameraRef.current?.stop?.(); handsRef.current?.close?.(); };
   }, []);
 
-  // Render loop
+  // Render loop lifecycle
   useEffect(() => {
     rafRef.current = requestAnimationFrame(renderLoop);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
@@ -545,7 +570,7 @@ export default function CatsCradle() {
       <div className="error-overlay">
         <h2>⚠ Camera Error</h2>
         <p>{error}</p>
-        <p style={{ marginTop: 12 }}>Please allow camera access and reload the page.</p>
+        <p style={{ marginTop: 12 }}>Please allow camera access and reload.</p>
       </div>
     );
   }
@@ -556,13 +581,10 @@ export default function CatsCradle() {
         <div className="loader-ring" />
         <p>Initializing Hand Tracking…</p>
       </div>
-
-      <div className={`instructions ${handsDetected ? 'fade' : ''}`}>
+      <div className={`instructions ${detected ? 'fade' : ''}`}>
         Bring both hands into the frame to see the magic ✨
       </div>
-
       <video ref={videoRef} style={{ display: 'none' }} playsInline />
-
       <div className="cradle-wrapper">
         <canvas ref={canvasRef} className="cradle-canvas" />
       </div>
