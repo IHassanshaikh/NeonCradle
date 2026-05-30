@@ -543,16 +543,21 @@ export default function CatsCradle() {
         leftRef.current = null;
         rightRef.current = null;
         if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
+          // Mirror the landmarks so they perfectly align with the mirrored camera feed
+          const mirroredHands = r.multiHandLandmarks.map(hand => 
+            hand.map(lm => ({ ...lm, x: 1 - lm.x }))
+          );
+
           // Determine hands by x-coordinate for foolproof mirror-handling
-          if (r.multiHandLandmarks.length === 1) {
-            const lm = r.multiHandLandmarks[0];
-            // x > 0.5 in raw video = left side of mirrored screen
-            if (lm[0].x > 0.5) leftRef.current = lm;
+          if (mirroredHands.length === 1) {
+            const lm = mirroredHands[0];
+            // x < 0.5 is the left side of the screen
+            if (lm[0].x < 0.5) leftRef.current = lm;
             else rightRef.current = lm;
           } else {
-            const lm0 = r.multiHandLandmarks[0];
-            const lm1 = r.multiHandLandmarks[1];
-            if (lm0[0].x > lm1[0].x) {
+            const lm0 = mirroredHands[0];
+            const lm1 = mirroredHands[1];
+            if (lm0[0].x < lm1[0].x) {
               leftRef.current = lm0;
               rightRef.current = lm1;
             } else {
