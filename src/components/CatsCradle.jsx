@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Hands } from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
 import './CatsCradle.css';
+
+/* MediaPipe is loaded via CDN script tags in index.html
+   and available as window.Hands / window.Camera */
 
 // ─── CONSTANTS ────────────────────────────────────────────
 const FINGERTIP_IDS = [4, 8, 12, 16, 20];
@@ -310,70 +311,82 @@ export default function CatsCradle() {
     if (!video) return;
 
     let isMounted = true;
+    let pollTimer = null;
 
-    const hands = new Hands({
-      locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`,
-    });
+    function init() {
+      // Wait for CDN scripts to load
+      if (!window.Hands || !window.Camera) {
+        pollTimer = setTimeout(init, 100);
+        return;
+      }
 
-    hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.65,
-      minTrackingConfidence: 0.55,
-    });
+      const hands = new window.Hands({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`,
+      });
 
-    hands.onResults((results) => {
-      if (!isMounted) return;
+      hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.65,
+        minTrackingConfidence: 0.55,
+      });
 
-      leftHandRef.current = null;
-      rightHandRef.current = null;
+      hands.onResults((results) => {
+        if (!isMounted) return;
 
-      if (results.multiHandLandmarks && results.multiHandedness) {
-        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-          const label = results.multiHandedness[i].label;
-          if (label === 'Left') {
-            rightHandRef.current = results.multiHandLandmarks[i];
-          } else {
-            leftHandRef.current = results.multiHandLandmarks[i];
+        leftHandRef.current = null;
+        rightHandRef.current = null;
+
+        if (results.multiHandLandmarks && results.multiHandedness) {
+          for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+            const label = results.multiHandedness[i].label;
+            if (label === 'Left') {
+              rightHandRef.current = results.multiHandLandmarks[i];
+            } else {
+              leftHandRef.current = results.multiHandLandmarks[i];
+            }
           }
         }
-      }
 
-      if (leftHandRef.current || rightHandRef.current) {
-        setHandsDetected(true);
-      }
-    });
-
-    handsRef.current = hands;
-
-    const cam = new Camera(video, {
-      onFrame: async () => {
-        await hands.send({ image: video });
-      },
-      width: 1280,
-      height: 720,
-    });
-
-    cameraRef.current = cam;
-
-    cam
-      .start()
-      .then(() => {
-        if (isMounted) setLoading(false);
-      })
-      .catch((err) => {
-        if (isMounted) {
-          setError('Camera access was denied or is unavailable.');
-          setLoading(false);
-          console.error(err);
+        if (leftHandRef.current || rightHandRef.current) {
+          setHandsDetected(true);
         }
       });
 
+      handsRef.current = hands;
+
+      const cam = new window.Camera(video, {
+        onFrame: async () => {
+          await hands.send({ image: video });
+        },
+        width: 1280,
+        height: 720,
+      });
+
+      cameraRef.current = cam;
+
+      cam
+        .start()
+        .then(() => {
+          if (isMounted) setLoading(false);
+        })
+        .catch((err) => {
+          if (isMounted) {
+            setError('Camera access was denied or is unavailable.');
+            setLoading(false);
+            console.error(err);
+          }
+        });
+    }
+
+    init();
+
     return () => {
       isMounted = false;
-      cam.stop?.();
-      hands.close?.();
+      if (pollTimer) clearTimeout(pollTimer);
+      cameraRef.current?.stop?.();
+      handsRef.current?.close?.();
     };
   }, []);
 
